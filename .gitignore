@@ -1,0 +1,74 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# uv - Virtual environments and cache
+.venv/
+venv/
+env/
+.eggs/
+wheels/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Tests and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+*.py,cover
+hypothesis/
+
+# Environment and config files
+.env
+.env.local
+.env.*.local
+.envrc
+
+# Logs
+logs/
+*.log
+
+# Temporary / OS files
+*.tmp
+*.bak
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# IDEs and editors
+.vscode/
+.idea/
+*.iml
+*.iws
+*.ipr
+*~
+.cursor/
+
+# Jupyter
+.ipynb_checkpoints
+profile_default/
+
+# Type checkers / linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Docs and databases
+docs/_build/
+site/
+*.db
+*.sqlite
+*.sqlite3
