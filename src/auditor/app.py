@@ -24,6 +24,7 @@ class DirectoryBrowser(Screen[Path]):
         yield Header()
         yield Static(str(self.path), id="current-path")
         yield ListView(id="directory-list")
+        yield Static("", id="status")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -42,6 +43,7 @@ class DirectoryBrowser(Screen[Path]):
             listing.append(ListItem(Label(directory.name)))
         listing.index = 0  # clear() resets the cursor; restore it to the top
         self.query_one("#current-path", Static).update(str(self.path))
+        self.query_one("#status", Static).update("")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Move into the highlighted directory when an entry is selected."""
@@ -58,6 +60,17 @@ class DirectoryBrowser(Screen[Path]):
             self.refresh_listing()
 
     def action_select_folder(self) -> None:
+        """Validate the current folder as a git/npm repo before accepting it."""
+        problems: list[str] = []
+        if not (self.path / ".git").exists():
+            problems.append("No es un repositorio de git (falta la carpeta .git)")
+        if not (self.path / "package.json").is_file():
+            problems.append(
+                "No tiene package.json para gestionar dependencias con npm"
+            )
+        if problems:
+            self.query_one("#status", Static).update(" | ".join(problems))
+            return
         self.app.exit(self.path)
 
     def action_quit_app(self) -> None:
