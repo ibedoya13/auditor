@@ -6,6 +6,8 @@ from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
+from auditor.runtime import missing_binaries
+
 
 class DirectoryBrowser(Screen[Path]):
     """Screen to navigate the filesystem and pick the repositories folder."""
@@ -85,6 +87,14 @@ class AuditorApp(App[Path]):
         self._start_path = start_path
 
     def on_mount(self) -> None:
+        missing = missing_binaries()
+        if missing:
+            self.exit(message=(
+                "No se pueden cumplir los requisitos de la aplicación: "
+                f"faltan los comandos {', '.join(missing)}. "
+                "Instálalos y vuelve a intentarlo."
+            ))
+            return
         self.push_screen(DirectoryBrowser(start_path=self._start_path))
 
 
