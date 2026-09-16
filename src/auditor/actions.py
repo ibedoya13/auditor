@@ -1,6 +1,5 @@
 """Actions that can be run on a selected repository."""
 
-import json
 import subprocess
 from dataclasses import dataclass
 

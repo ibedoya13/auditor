@@ -2,18 +2,17 @@
 
 from pathlib import Path
 from typing import ClassVar
- 
+
 from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
-from auditor.actions import ACTIONS_REGISTRY, RepoActions
-from auditor.runtime import missing_binaries
+from auditor.actions import RepoActions
 
 
 class DirectoryBrowser(Screen[Path]):
     """Screen to navigate the filesystem and pick the repositories folder."""
-    
+
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("s", "select_folder", "Seleccionar carpeta"),
         ("backspace", "go_up", "Carpeta padre"),
@@ -69,9 +68,7 @@ class DirectoryBrowser(Screen[Path]):
         if not (self.path / ".git").exists():
             problems.append("No es un repositorio de git (falta la carpeta .git)")
         if not (self.path / "package.json").is_file():
-            problems.append(
-                "No tiene package.json para gestionar dependencias con npm"
-            )
+            problems.append("No tiene package.json para gestionar dependencias con npm")
         if problems:
             self.query_one("#status", Static).update(" | ".join(problems))
             return

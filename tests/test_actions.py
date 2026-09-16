@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from textual.widgets import Static
 
-from auditor.app import ACTIONS_REGISTRY, AuditorApp
-from auditor.actions import RepoActions
+from auditor.actions import ACTIONS_REGISTRY, RepoActions
+from auditor.app import AuditorApp
 
 
 def make_valid_repo(tmp_path: Path) -> Path:
@@ -54,9 +54,7 @@ def test_actions_screen_lists_npm_audit_when_npm_available(
             await pilot.press("s")
             await pilot.pause()
             listing = app.screen.query_one("#actions-list")
-            labels = [
-                str(item.children[0].render()) for item in listing.children
-            ]
+            labels = [str(item.children[0].render()) for item in listing.children]
             assert any("npm audit" in label for label in labels)
 
     asyncio.run(run())
@@ -73,10 +71,7 @@ def test_actions_screen_omits_npm_audit_without_npm(tmp_path: Path) -> None:
                 await pilot.press("s")
                 await pilot.pause()
                 listing = app.screen.query_one("#actions-list")
-                labels = [
-                    str(item.children[0].render())
-                    for item in listing.children
-                ]
+                labels = [str(item.children[0].render()) for item in listing.children]
                 assert not any("npm audit" in label for label in labels)
 
     asyncio.run(run())

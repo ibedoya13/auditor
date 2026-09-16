@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 from textual.widgets import ListView
 
-from auditor.app import AuditorApp, DirectoryBrowser
 from auditor.actions import RepoActions
-from auditor.runtime import REQUIRED_BINARIES, missing_binaries
+from auditor.app import AuditorApp, DirectoryBrowser
+from auditor.runtime import missing_binaries
+
 
 def test_app_opens_browser_at_user_home() -> None:
     """On startup the app pushes the directory browser rooted at the user's home."""
@@ -34,10 +35,7 @@ def test_browser_lists_only_visible_directories(tmp_path: Path) -> None:
     async def run() -> None:
         async with app.run_test():
             listing = app.screen.query_one("#directory-list", ListView)
-            names = [
-                str(child.children[0].render())
-                for child in listing.children
-            ]
+            names = [str(child.children[0].render()) for child in listing.children]
             assert names == ["repo-a", "repo-b"]
 
     asyncio.run(run())
