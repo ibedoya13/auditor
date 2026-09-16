@@ -7,8 +7,8 @@ import pytest
 from textual.widgets import ListView
 
 from auditor.app import AuditorApp, DirectoryBrowser
+from auditor.actions import RepoActions
 from auditor.runtime import REQUIRED_BINARIES, missing_binaries
-
 
 def test_app_opens_browser_at_user_home() -> None:
     """On startup the app pushes the directory browser rooted at the user's home."""
@@ -85,7 +85,7 @@ def test_backspace_at_filesystem_root_stays_put() -> None:
 
 
 def test_select_exits_app_with_valid_repo(tmp_path: Path) -> None:
-    """Pressing 's' exits the app with the chosen path if it is a valid repo."""
+    """Pressing 's' on a valid repo pushes the actions screen."""
     (tmp_path / ".git").mkdir()
     (tmp_path / "package.json").write_text("{}")
     app = AuditorApp(start_path=tmp_path)
@@ -93,9 +93,11 @@ def test_select_exits_app_with_valid_repo(tmp_path: Path) -> None:
     async def run() -> None:
         async with app.run_test() as pilot:
             await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, RepoActions)
+            assert app.screen.repo_path == str(tmp_path)
 
     asyncio.run(run())
-    assert app.return_value == tmp_path
 
 
 def test_select_stays_and_warns_when_not_a_git_repo(tmp_path: Path) -> None:
@@ -161,10 +163,10 @@ def test_navigating_clears_the_validation_warning(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
-def test_missing_binaries_reports_nothing_when_all_present(
+def test_missing_binaries_reports_nothing_when_npm_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With every required binary on PATH, no missing binaries are reported."""
+    """With npm on PATH, no missing binaries are reported."""
     monkeypatch.setattr(
         "auditor.runtime.shutil.which",
         lambda name: f"/usr/bin/{name}",
@@ -172,38 +174,38 @@ def test_missing_binaries_reports_nothing_when_all_present(
     assert missing_binaries() == []
 
 
-def test_missing_binaries_reports_the_absent_ones(
+def test_missing_binaries_reports_npm_when_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only the binaries that cannot be found on PATH are reported."""
-    monkeypatch.setattr(
-        "auditor.runtime.shutil.which",
-        lambda name: None if name in {"npm", "npx"} else f"/usr/bin/{name}",
-    )
-    assert missing_binaries() == ["npm", "npx"]
-
-
-def test_missing_binaries_covers_git_npm_and_npx(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When nothing is on PATH, every required binary is reported."""
+    """npm is reported when it cannot be found on PATH."""
     monkeypatch.setattr("auditor.runtime.shutil.which", lambda name: None)
-    assert missing_binaries() == list(REQUIRED_BINARIES)
+    assert missing_binaries() == ["npm"]
 
 
-def test_app_exits_with_error_when_binaries_are_missing(
+def test_npm_availability_is_left_to_the_actions_screen(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The app refuses to start and reports the missing runtime dependencies."""
+    """The browser no longer validates npm; the actions screen filters by it."""
     monkeypatch.setattr("auditor.runtime.shutil.which", lambda name: None)
-    app = AuditorApp()
+    assert missing_binaries() == ["npm"]  # detection still works for filtering
+
+
+def test_select_opens_actions_even_without_npm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid repo opens the actions screen even when npm is missing."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "package.json").write_text("{}")
+    monkeypatch.setattr("auditor.runtime.shutil.which", lambda name: None)
+    app = AuditorApp(start_path=tmp_path)
 
     async def run() -> None:
-        async with app.run_test():
-            assert not isinstance(app.screen, DirectoryBrowser)
+        async with app.run_test() as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, RepoActions)
 
     asyncio.run(run())
-    assert app.return_value is None
 
 
 def browser_of(app: AuditorApp) -> "DirectoryBrowser":

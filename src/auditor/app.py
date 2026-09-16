@@ -1,18 +1,20 @@
 """auditor: TUI to automate npm vulnerability remediation in Node.js repos."""
 
 from pathlib import Path
-
+from typing import ClassVar
+ 
 from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
+from auditor.actions import ACTIONS_REGISTRY, RepoActions
 from auditor.runtime import missing_binaries
 
 
 class DirectoryBrowser(Screen[Path]):
     """Screen to navigate the filesystem and pick the repositories folder."""
-
-    BINDINGS = [
+    
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("s", "select_folder", "Seleccionar carpeta"),
         ("backspace", "go_up", "Carpeta padre"),
         ("q", "quit_app", "Salir"),
@@ -62,7 +64,7 @@ class DirectoryBrowser(Screen[Path]):
             self.refresh_listing()
 
     def action_select_folder(self) -> None:
-        """Validate the current folder as a git/npm repo before accepting it."""
+        """Validate the repo structure, then show its available actions."""
         problems: list[str] = []
         if not (self.path / ".git").exists():
             problems.append("No es un repositorio de git (falta la carpeta .git)")
@@ -73,7 +75,7 @@ class DirectoryBrowser(Screen[Path]):
         if problems:
             self.query_one("#status", Static).update(" | ".join(problems))
             return
-        self.app.exit(self.path)
+        self.app.push_screen(RepoActions(repo_path=str(self.path)))
 
     def action_quit_app(self) -> None:
         self.app.exit()
@@ -87,14 +89,6 @@ class AuditorApp(App[Path]):
         self._start_path = start_path
 
     def on_mount(self) -> None:
-        missing = missing_binaries()
-        if missing:
-            self.exit(message=(
-                "No se pueden cumplir los requisitos de la aplicación: "
-                f"faltan los comandos {', '.join(missing)}. "
-                "Instálalos y vuelve a intentarlo."
-            ))
-            return
         self.push_screen(DirectoryBrowser(start_path=self._start_path))
 
 
