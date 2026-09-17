@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Grid
@@ -13,6 +15,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Footer,
     Header,
+    Input,
     Label,
     ListItem,
     ListView,
@@ -34,6 +37,7 @@ class Action:
     required_binary: str
     runner: Runner
     needs_confirmation: bool = False
+    opens_modal: bool = False
 
 
 def npm_run(repo_path: str, args: list[str]) -> str:
@@ -169,6 +173,60 @@ def feature_branch_name() -> str:
     return datetime.now().strftime("feature/%Y%m%d%H%M%S")
 
 
+def apply_overrides(
+    package_json: dict,
+    packages: list[str],
+    version: str,
+    direct_dependencies: set[str] | None = None,
+) -> dict:
+    """Pin packages to an exact version in the package.json overrides.
+
+    Updates the override if it already exists, adds it otherwise.
+    Overrides can only target transitive dependencies: a package listed
+    in dependencies/devDependencies/optionalDependencies/peerDependencies
+    cannot be overridden (npm rejects that with EOVERRIDE).
+    Raises ValueError for an empty package list, an invalid version, or
+    a package that is a direct dependency.
+    """
+    cleaned = [name.strip() for name in packages if name.strip()]
+    if not cleaned:
+        raise ValueError("Debe indicar al menos un paquete.")
+    direct = direct_dependencies or set()
+    direct_hits = [name for name in cleaned if name in direct]
+    if direct_hits:
+        raise ValueError(
+            "No se puede fijar con overrides una dependencia directa: "
+            + ", ".join(direct_hits)
+            + ". Los overrides solo aplican a dependencias transitivas."
+        )
+    version = version.strip()
+    if version.lower().startswith("v"):
+        version = version[1:]
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError(
+            f"Versión '{version}' no es una versión exacta válida "
+            "(formato esperado: X.Y.Z)."
+        )
+    overrides = dict(package_json.get("overrides") or {})
+    for name in cleaned:
+        overrides[name] = version
+    package_json["overrides"] = overrides
+    return package_json
+
+
+def direct_dependencies_of(package_json: dict) -> set[str]:
+    """Collect the direct dependency names declared in package.json."""
+    direct: set[str] = set()
+    for section in (
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ):
+        direct.update((package_json.get(section) or {}).keys())
+    return direct
+
+
 def run_git_create_feature_branch(repo_path: str) -> str:
     """Create 'feature/{timestamp}' from develop, or trunk as fallback.
 
@@ -241,6 +299,9 @@ class RepoActions(Screen[None]):
             self._pending_action = action
             self.app.push_screen(ConfirmScreen(action), callback=self._on_confirmation)
             return
+        if action.opens_modal:
+            self.app.push_screen(OverridesScreen(self.repo_path))
+            return
         self.run_action(action)
 
     def _on_confirmation(self, confirmed: bool | None) -> None:
@@ -310,6 +371,106 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class OverridesScreen(ModalScreen[None]):
+    """Modal to enter packages and a version to pin in package.json."""
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancelar"),
+    ]
+
+    DEFAULT_CSS = """
+    OverridesScreen {
+        align: center middle;
+    }
+    OverridesScreen Grid {
+        grid-rows: auto 1fr auto 1fr auto;
+        width: 70;
+        height: auto;
+        border: round $accent;
+        padding: 1 2;
+    }
+    OverridesScreen #packages-input, OverridesScreen #version-input {
+        border: round $border;
+    }
+    OverridesScreen #overrides-help, OverridesScreen #overrides-title {
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, repo_path: str) -> None:
+        super().__init__()
+        self.repo_path = repo_path
+
+    def compose(self) -> ComposeResult:
+        with Grid():
+            yield Static(
+                "Fijar dependencias transitivas con overrides\n"
+                "Paquetes separados por coma (ej: paquete-a,paquete-b)\n"
+                "Solo dependencias transitivas (no directas).",
+                id="overrides-title",
+            )
+            yield Input(placeholder="paquete-a,paquete-b", id="packages-input")
+            yield Static("Versión exacta (X.Y.Z):", id="version-label")
+            yield Input(placeholder="1.2.3", id="version-input")
+            yield Static(
+                "enter: aplicar · tab: cambiar campo · esc: cancelar",
+                id="overrides-help",
+            )
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.apply_overrides()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def apply_overrides(self) -> None:
+        packages_field = self.query_one("#packages-input", Input)
+        version_field = self.query_one("#version-input", Input)
+        packages = packages_field.value.split(",")
+        try:
+            package_path = Path(self.repo_path) / "package.json"
+            package_json = json.loads(package_path.read_text())
+            updated = apply_overrides(
+                package_json,
+                packages,
+                version_field.value,
+                direct_dependencies=direct_dependencies_of(package_json),
+            )
+            package_path.write_text(json.dumps(updated, indent=2) + "\n")
+        except (ValueError, json.JSONDecodeError, OSError) as error:
+            self.app.notify(str(error), title="Error", severity="error")
+            return
+        pinned = ", ".join(
+            f"{name}@{updated['overrides'][name]}" for name in updated["overrides"]
+        )
+        self.dismiss(None)
+        self.app.call_later(
+            self._apply_overrides_with_install,
+            f"Overrides actualizados en package.json:\n  • {pinned}",
+        )
+
+    def _apply_overrides_with_install(self, summary: str) -> None:
+        """Run npm install so the overrides take effect on node_modules."""
+        screen = self.app.screen
+        if isinstance(screen, RepoActions):
+            screen.run_action(
+                Action(
+                    label="Fijar dependencias (npm overrides)",
+                    required_binary="npm",
+                    runner=lambda repo_path: (
+                        f"{summary}\n\n"
+                        + npm_run(repo_path, ["install", "--no-audit", "--no-fund"])
+                        + "\nnpm install completado: overrides aplicados."
+                    ),
+                )
+            )
+
+    def _report_result(self, text: str) -> None:
+        screen = self.app.screen
+        if isinstance(screen, RepoActions):
+            screen._write_output(text)
+
+
 ACTIONS_REGISTRY: dict[str, Action] = {
     # Git actions first
     "Limpiar repositorio (git)": Action(
@@ -339,5 +500,11 @@ ACTIONS_REGISTRY: dict[str, Action] = {
         required_binary="npm",
         runner=run_npm_audit_fix_force,
         needs_confirmation=True,
+    ),
+    "Fijar dependencias (npm overrides)": Action(
+        label="Fijar dependencias (npm overrides)",
+        required_binary="npm",
+        runner=lambda repo_path: "",
+        opens_modal=True,
     ),
 }

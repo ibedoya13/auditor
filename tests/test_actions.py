@@ -1,18 +1,22 @@
 """Tests for the repository actions screen."""
 
 import asyncio
+import json
 import re
 import threading
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from textual.widgets import ListView, LoadingIndicator, Static
+from textual.widgets import Input, ListView, LoadingIndicator, Static
 
 from auditor.actions import (
     ACTIONS_REGISTRY,
     ConfirmScreen,
+    OverridesScreen,
     RepoActions,
+    apply_overrides,
+    direct_dependencies_of,
     feature_branch_name,
     run_git_create_feature_branch,
 )
@@ -739,3 +743,160 @@ def test_fix_report_reads_reaudit_from_nested_audit_key(
         return_value=SAMPLE_FORCE_FIX_OUTPUT,
     ):
         asyncio.run(run())
+
+
+def test_overrides_action_updates_existing_override() -> None:
+    """An existing override for the package is updated, not duplicated."""
+    package_json = {
+        "name": "demo",
+        "overrides": {"paquete-a": "1.0.0"},
+        "dependencies": {"paquete-a": "^1.0.0"},
+    }
+    result = apply_overrides(package_json, ["paquete-a"], "2.5.0")
+    assert result["overrides"] == {"paquete-a": "2.5.0"}
+    assert result["dependencies"] == {"paquete-a": "^1.0.0"}
+
+
+def test_overrides_action_adds_new_override_to_multiple_packages() -> None:
+    """A comma-separated list pins every package to the same version."""
+    package_json = {"name": "demo"}
+    result = apply_overrides(package_json, ["paquete-a", "paquete-b"], "2.5.0")
+    assert result["overrides"] == {
+        "paquete-a": "2.5.0",
+        "paquete-b": "2.5.0",
+    }
+
+
+def test_overrides_action_preserves_other_overrides() -> None:
+    """Existing overrides for other packages remain untouched."""
+    package_json = {
+        "overrides": {"otro": "3.1.4"},
+    }
+    result = apply_overrides(package_json, ["paquete-a"], "2.5.0")
+    assert result["overrides"] == {"otro": "3.1.4", "paquete-a": "2.5.0"}
+
+
+def test_overrides_action_rejects_empty_package_list() -> None:
+    """An empty package list is rejected with an error."""
+    with pytest.raises(ValueError, match="paquete"):
+        apply_overrides({}, [], "2.5.0")
+
+
+def test_overrides_action_rejects_invalid_version() -> None:
+    """A version that is not a valid exact semver is rejected."""
+    with pytest.raises(ValueError, match="versión"):
+        apply_overrides({}, ["paquete-a"], "^2.5.0")
+
+
+def test_overrides_action_accepts_versions_with_v_prefix() -> None:
+    """A 'v' prefix on the version is accepted and normalized away."""
+    result = apply_overrides({}, ["paquete-a"], "v2.5.0")
+    assert result["overrides"] == {"paquete-a": "2.5.0"}
+
+
+def test_overrides_action_strips_whitespace_from_package_names() -> None:
+    """Spaces around comma-separated package names are ignored."""
+    result = apply_overrides({}, [" paquete-a ", "paquete-b "], "2.5.0")
+    assert result["overrides"] == {
+        "paquete-a": "2.5.0",
+        "paquete-b": "2.5.0",
+    }
+
+
+def test_overrides_action_rejects_direct_dependency() -> None:
+    """A package declared in dependencies cannot be overridden."""
+    package_json = {
+        "dependencies": {"paquete-a": "^1.0.0"},
+        "devDependencies": {"paquete-dev": "2.0.0"},
+    }
+    direct = direct_dependencies_of(package_json)
+    with pytest.raises(ValueError, match="directa.*paquete-a"):
+        apply_overrides(package_json, ["paquete-a"], "2.5.0", direct)
+    with pytest.raises(ValueError, match="directa.*paquete-dev"):
+        apply_overrides(package_json, ["paquete-dev"], "2.5.0", direct)
+
+
+def test_overrides_action_rejects_direct_dependency_among_valid_ones() -> None:
+    """One direct dependency in the list rejects the whole operation."""
+    package_json = {"dependencies": {"paquete-b": "^1.0.0"}}
+    direct = direct_dependencies_of(package_json)
+    with pytest.raises(ValueError, match="paquete-b"):
+        apply_overrides(package_json, ["paquete-a", "paquete-b"], "2.5.0", direct)
+
+
+def test_overrides_action_allows_transitive_dependencies() -> None:
+    """Packages not declared as direct dependencies can be overridden."""
+    package_json = {
+        "dependencies": {"paquete-a": "^1.0.0"},
+        "overrides": {"transitiva": "1.0.0"},
+    }
+    direct = direct_dependencies_of(package_json)
+    result = apply_overrides(package_json, ["transitiva", "otra"], "2.5.0", direct)
+    assert result["overrides"] == {
+        "transitiva": "2.5.0",
+        "otra": "2.5.0",
+    }
+
+
+def test_direct_dependencies_collects_all_sections() -> None:
+    """All dependency sections feed the direct dependency set."""
+    package_json = {
+        "dependencies": {"a": "1.0.0"},
+        "devDependencies": {"b": "1.0.0"},
+        "optionalDependencies": {"c": "1.0.0"},
+        "peerDependencies": {"d": "1.0.0"},
+    }
+    assert direct_dependencies_of(package_json) == {"a", "b", "c", "d"}
+
+
+def test_overrides_screen_opens_when_action_selected(tmp_path: Path) -> None:
+    """Selecting the overrides action opens the input modal."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+
+    async def run() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            await select_action(app, pilot, "Fijar dependencias")
+            await pilot.pause()
+            assert isinstance(app.screen, OverridesScreen)
+
+    asyncio.run(run())
+
+
+def test_overrides_screen_writes_package_json(tmp_path: Path) -> None:
+    """Submitting the modal updates the repo's package.json."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+
+    async def run() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            await select_action(app, pilot, "Fijar dependencias")
+            await pilot.pause()
+            app.screen.query_one("#packages-input", Input).value = "lodash"
+            app.screen.query_one("#version-input", Input).value = "4.17.21"
+            await pilot.press("enter")  # submit
+            await wait_for_idle(app)
+            assert isinstance(app.screen, RepoActions)
+            text = actions_output(app)
+            assert "lodash" in text and "4.17.21" in text
+            assert "npm install completado" in text
+
+    with patch("auditor.actions.npm_run", return_value="added 1 package") as npm_mock:
+        asyncio.run(run())
+        # npm install runs chained after writing the overrides
+        install_call = next(
+            (c for c in npm_mock.call_args_list if c.args[1][:1] == ["install"]),
+            None,
+        )
+        assert install_call is not None
+        assert "--no-audit" in install_call.args[1]
+
+    asyncio.run(asyncio.sleep(0))
+    saved = json.loads((repo / "package.json").read_text())
+    assert saved["overrides"] == {"lodash": "4.17.21"}
+    # existing keys are preserved (make_valid_repo only writes "{}")
+    assert set(saved) == {"overrides"}
