@@ -168,6 +168,10 @@ class RepoActions(Screen[None]):
             return
         self.execute(self._available[index])
 
+    def action_go_back(self) -> None:
+        """Dismiss the actions screen and return to the directory browser."""
+        self.app.pop_screen()
+
     def execute(self, action: Action) -> None:
         if action.needs_confirmation:
             self._pending_action = action

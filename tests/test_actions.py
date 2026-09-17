@@ -8,7 +8,7 @@ from unittest.mock import patch
 from textual.widgets import LoadingIndicator, Static
 
 from auditor.actions import ACTIONS_REGISTRY, ConfirmScreen, RepoActions
-from auditor.app import AuditorApp
+from auditor.app import AuditorApp, DirectoryBrowser
 
 
 def make_valid_repo(tmp_path: Path) -> Path:
@@ -250,6 +250,28 @@ def test_spinner_is_hidden_when_the_actions_screen_opens(
             await pilot.pause()
             spinner = app.screen.query_one("#action-spinner", LoadingIndicator)
             assert not spinner.display
+
+    asyncio.run(run())
+
+
+def test_escape_from_actions_returns_to_directory_browser(
+    tmp_path: Path,
+) -> None:
+    """Pressing escape on the actions screen goes back to the folder browser."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, RepoActions)
+            await pilot.press("escape")
+            await pilot.pause()
+            browser = app.screen
+            assert isinstance(browser, DirectoryBrowser)
+            # the browser is back with the same listing state
+            assert browser.path == repo
 
     asyncio.run(run())
 
