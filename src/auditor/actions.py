@@ -250,6 +250,22 @@ def run_git_create_feature_branch(repo_path: str) -> str:
     return f"Branch '{branch}' creado desde '{base}'."
 
 
+def remediation_commit_message(fixed: datetime | None = None) -> str:
+    """Build the vulnerability remediation commit message with its date."""
+    moment = fixed or datetime.now()
+    return f"Remediación de vulnerabilidades - {moment:%Y-%m-%d %H:%M}"
+
+
+def run_git_commit_remediation(repo_path: str) -> str:
+    """Stage every change and commit with the remediation message."""
+    if not git_run(repo_path, ["status", "--porcelain"]).strip():
+        return "No hay cambios pendientes: sin cambios para commitear."
+    git_run(repo_path, ["add", "-A"])
+    message = remediation_commit_message()
+    git_run(repo_path, ["commit", "-m", message])
+    return f"Commit creado: '{message}'."
+
+
 class RepoActions(Screen[None]):
     """Shows the actions available for a repository based on host binaries."""
 
@@ -483,6 +499,12 @@ ACTIONS_REGISTRY: dict[str, Action] = {
         label="Crear branch feature (git)",
         required_binary="git",
         runner=run_git_create_feature_branch,
+    ),
+    "Commitear remediación (git)": Action(
+        label="Commitear remediación (git)",
+        required_binary="git",
+        runner=run_git_commit_remediation,
+        needs_confirmation=True,
     ),
     # npm actions
     "Ver vulnerabilidades (npm audit)": Action(

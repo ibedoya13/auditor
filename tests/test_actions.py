@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import threading
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,8 @@ from auditor.actions import (
     apply_overrides,
     direct_dependencies_of,
     feature_branch_name,
+    remediation_commit_message,
+    run_git_commit_remediation,
     run_git_create_feature_branch,
 )
 from auditor.app import AuditorApp, DirectoryBrowser
@@ -847,6 +850,102 @@ def test_direct_dependencies_collects_all_sections() -> None:
         "peerDependencies": {"d": "1.0.0"},
     }
     assert direct_dependencies_of(package_json) == {"a", "b", "c", "d"}
+
+
+def test_remediation_commit_message_includes_date() -> None:
+    """The commit message states the vulnerability remediation and date."""
+    message = remediation_commit_message(fixed=datetime(2026, 9, 17, 10, 30))
+    assert message.startswith("Remediación de vulnerabilidades")
+    assert "2026-09-17 10:30" in message
+
+
+def test_remediation_commit_adds_and_commits() -> None:
+    """The action stages all changes and commits with the message."""
+    calls: list[list[str]] = []
+
+    def fake_git_run(repo_path: str, args: list[str]) -> str:
+        calls.append(args)
+        if args[0] == "status":
+            return " M file.txt\n"  # pending changes present
+        return ""
+
+    with (
+        patch("auditor.actions.git_run", side_effect=fake_git_run),
+        patch("auditor.actions.datetime") as dt_mock,
+    ):
+        dt_mock.now.return_value = datetime(2026, 9, 17, 10, 30)
+        run_git_commit_remediation("/repo")
+
+    assert calls[0] == ["status", "--porcelain"]  # check pending changes first
+    assert calls[1] == ["add", "-A"]
+    assert calls[2][0] == "commit"
+    assert calls[2][1] == "-m"
+    assert "Remediación de vulnerabilidades" in calls[2][2]
+    assert "2026-09-17 10:30" in calls[2][2]
+
+
+def test_remediation_commit_without_changes_reports_it() -> None:
+    """With nothing to commit, the action says so instead of failing."""
+
+    def fake_git_run(repo_path: str, args: list[str]) -> str:
+        if args[0] == "status":
+            return ""  # empty status: nothing pending
+        if args[0] == "commit":
+            raise RuntimeError("nothing to commit")
+        return ""
+
+    with patch("auditor.actions.git_run", side_effect=fake_git_run):
+        output = run_git_commit_remediation("/repo")
+
+    assert "sin cambios" in output.lower()
+
+
+def test_remediation_commit_action_lists_and_confirms(tmp_path: Path) -> None:
+    """The action appears with git and asks for confirmation before commit."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+
+    async def run() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            await select_action(app, pilot, "Commitear remediación")
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmScreen)
+            await pilot.press("escape")  # cancel
+            await pilot.pause()
+            assert isinstance(app.screen, RepoActions)
+
+    with patch("auditor.actions.git_run") as git_mock:
+        asyncio.run(run())
+        git_mock.assert_not_called()
+
+
+def test_remediation_commit_action_runs_after_confirmation(
+    tmp_path: Path,
+) -> None:
+    """Confirming the dialog stages and commits with the message."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+
+    async def run() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            await select_action(app, pilot, "Commitear remediación")
+            await pilot.press("s")  # confirm
+            await wait_for_idle(app)
+            text = actions_output(app).lower()
+            assert "commit" in text
+            assert "remediación" in text
+
+    with patch("auditor.actions.git_run") as git_mock:
+        git_mock.side_effect = [
+            "staged",  # git status
+            "",  # git add -A
+            "",  # git commit
+        ]
+        asyncio.run(run())
 
 
 def test_overrides_screen_opens_when_action_selected(tmp_path: Path) -> None:
