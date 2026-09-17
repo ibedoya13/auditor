@@ -1,13 +1,21 @@
 """Tests for the repository actions screen."""
 
 import asyncio
+import re
 import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from textual.widgets import LoadingIndicator, Static
 
-from auditor.actions import ACTIONS_REGISTRY, ConfirmScreen, RepoActions
+from auditor.actions import (
+    ACTIONS_REGISTRY,
+    ConfirmScreen,
+    RepoActions,
+    feature_branch_name,
+    run_git_create_feature_branch,
+)
 from auditor.app import AuditorApp, DirectoryBrowser
 
 
@@ -106,6 +114,189 @@ def test_actions_screen_lists_fix_actions(tmp_path: Path) -> None:
             assert any("npm audit fix --force" in label for label in labels)
 
     asyncio.run(run())
+
+
+def test_git_clean_action_requires_git_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The git clean action only appears when git is available on the host."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            labels = actions_labels(app)
+            assert any("Limpiar repositorio" in label for label in labels)
+
+    asyncio.run(run())
+
+    async def run_without_git() -> None:
+        with patch("auditor.runtime.shutil.which", return_value=None):
+            app = AuditorApp(start_path=repo)
+            async with app.run_test() as pilot:
+                await pilot.press("s")
+                await pilot.pause()
+                labels = actions_labels(app)
+                assert not any("Limpiar repositorio" in label for label in labels)
+
+    asyncio.run(run_without_git())
+
+
+def test_git_clean_resets_staging_and_stashes_pending_changes(
+    tmp_path: Path,
+) -> None:
+    """The git clean action runs git reset and git stash -u on the repo."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+
+    async def run() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            labels = actions_labels(app)
+            git_index = next(i for i, label in enumerate(labels) if "Limpiar" in label)
+            for _ in range(git_index):
+                await pilot.press("down")
+            await pilot.press("enter")  # confirmation dialog
+            await pilot.pause()
+            await pilot.press("s")  # confirm
+            await wait_for_idle(app)
+            text = actions_output(app).lower()
+            assert "staging" in text and "stash" in text
+
+    with patch("auditor.actions.git_run") as git_mock:
+        git_mock.side_effect = [
+            "Unstaged files after reset",
+            "Saved working directory and index state WIP on main",
+        ]
+        asyncio.run(run())
+        commands = [call.args[1] for call in git_mock.call_args_list]
+        assert commands[0] == ["reset"]
+        assert commands[1] == ["stash", "-u"]
+
+
+def test_git_clean_action_requires_confirmation(tmp_path: Path) -> None:
+    """Cleaning the repo asks for confirmation before touching anything."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+
+    async def run() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            labels = actions_labels(app)
+            git_index = next(i for i, label in enumerate(labels) if "Limpiar" in label)
+            for _ in range(git_index):
+                await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmScreen)
+            await pilot.press("escape")  # cancel
+            await pilot.pause()
+            assert isinstance(app.screen, RepoActions)
+            assert actions_output(app) == ""
+
+    with patch("auditor.actions.git_run") as git_mock:
+        asyncio.run(run())
+        git_mock.assert_not_called()
+
+
+def test_feature_branch_name_uses_digits_only_timestamp() -> None:
+    """The generated branch name is feature/{digits} with no separators."""
+    name = feature_branch_name()
+    assert re.fullmatch(r"feature/\d{14}", name)
+
+
+def test_feature_branch_is_created_from_develop() -> None:
+    """When develop exists the branch is created from it."""
+    calls: list[list[str]] = []
+
+    def fake_git_run(repo_path: str, args: list[str]) -> str:
+        calls.append(args)
+        if args[:2] == ["rev-parse", "--verify"]:
+            if args[2] == "develop":
+                return "develop\n"
+            raise RuntimeError(f"fatal: '{args[2]}' not found")
+        if args[0] == "checkout":
+            return f"Switched to a new branch '{args[2]}'"
+        return ""
+
+    with patch("auditor.actions.git_run", side_effect=fake_git_run):
+        output = run_git_create_feature_branch("/repo")
+
+    assert calls[0] == ["rev-parse", "--verify", "develop"]
+    assert calls[1][0] == "checkout"
+    assert calls[1][1] == "-b"
+    assert calls[1][3] == "develop"
+    assert re.fullmatch(r"feature/\d{14}", calls[1][2])
+    assert "creado" in output
+
+
+def test_feature_branch_falls_back_to_trunk() -> None:
+    """Without develop, the branch is created from trunk."""
+    calls: list[list[str]] = []
+
+    def fake_git_run(repo_path: str, args: list[str]) -> str:
+        calls.append(args)
+        if args[:2] == ["rev-parse", "--verify"]:
+            if args[2] == "trunk":
+                return "trunk\n"
+            raise RuntimeError(f"fatal: '{args[2]}' not found")
+        if args[0] == "checkout":
+            return f"Switched to a new branch '{args[2]}'"
+        return ""
+
+    with patch("auditor.actions.git_run", side_effect=fake_git_run):
+        run_git_create_feature_branch("/repo")
+
+    assert calls[0] == ["rev-parse", "--verify", "develop"]
+    assert calls[1] == ["rev-parse", "--verify", "trunk"]
+    assert calls[2][3] == "trunk"
+
+
+def test_feature_branch_errors_without_develop_or_trunk() -> None:
+    """When neither develop nor trunk exists the action reports the error."""
+    with (
+        patch(
+            "auditor.actions.git_run",
+            side_effect=RuntimeError("fatal: not found"),
+        ),
+        pytest.raises(RuntimeError, match="develop.*trunk|trunk.*develop"),
+    ):
+        run_git_create_feature_branch("/repo")
+
+
+def test_feature_branch_action_appears_and_runs(tmp_path: Path) -> None:
+    """The action shows up with git available and runs without confirmation."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+
+    async def run() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            labels = actions_labels(app)
+            branch_index = next(
+                i for i, label in enumerate(labels) if "feature" in label
+            )
+            for _ in range(branch_index):
+                await pilot.press("down")
+            await pilot.press("enter")  # no confirmation dialog expected
+            await pilot.pause()
+            assert isinstance(app.screen, RepoActions)
+            await wait_for_idle(app)
+            text = actions_output(app)
+            assert "creado" in text
+            assert "develop" in text
+
+    with patch("auditor.actions.git_run") as git_mock:
+        git_mock.side_effect = [
+            "develop\n",
+            "Switched to a new branch 'feature/20260917000000'",
+        ]
+        asyncio.run(run())
 
 
 def test_running_npm_audit_fix_reports_applied_and_remaining(

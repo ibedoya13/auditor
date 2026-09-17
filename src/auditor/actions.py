@@ -5,6 +5,7 @@ import json
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from textual.app import ComposeResult
 from textual.containers import Grid
@@ -126,6 +127,69 @@ def run_npm_audit_fix_safe(repo_path: str) -> str:
 def run_npm_audit_fix_force(repo_path: str) -> str:
     """Forced fix: may install breaking major versions."""
     return format_fix_report(run_npm_audit_fix(repo_path, force=True))
+
+
+def git_run(repo_path: str, args: list[str]) -> str:
+    """Run a git command in the repo and return its stdout."""
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Error de git")
+    return result.stdout
+
+
+def run_git_clean(repo_path: str) -> str:
+    """Empty the staging area and stash every pending change.
+
+    Runs 'git reset' to unstage everything and 'git stash -u' to save
+    all pending changes (including untracked files), leaving the repo
+    clean for new changes.
+    """
+    lines: list[str] = []
+    lines.append(git_run(repo_path, ["reset"]).strip())
+    stash_output = git_run(repo_path, ["stash", "-u"]).strip()
+    lines.append(stash_output)
+    return "\n".join(
+        [
+            "Staging area limpio (git reset).",
+            "Cambios pendientes guardados en stash (git stash -u).",
+            "",
+            stash_output or "No había cambios pendientes.",
+        ]
+    )
+
+
+def feature_branch_name() -> str:
+    """Build a branch name 'feature/{timestamp}' with digits only."""
+    return datetime.now().strftime("feature/%Y%m%d%H%M%S")
+
+
+def run_git_create_feature_branch(repo_path: str) -> str:
+    """Create 'feature/{timestamp}' from develop, or trunk as fallback.
+
+    Raises RuntimeError when neither develop nor trunk exists in the repo.
+    """
+    base = None
+    for candidate in ("develop", "trunk"):
+        try:
+            git_run(repo_path, ["rev-parse", "--verify", candidate])
+            base = candidate
+            break
+        except RuntimeError:
+            continue
+    if base is None:
+        raise RuntimeError(
+            "El repo no tiene branch 'develop' ni 'trunk' desde donde crear "
+            "el branch nuevo."
+        )
+    branch = feature_branch_name()
+    git_run(repo_path, ["checkout", "-b", branch, base])
+    return f"Branch '{branch}' creado desde '{base}'."
 
 
 class RepoActions(Screen[None]):
@@ -262,5 +326,16 @@ ACTIONS_REGISTRY: dict[str, Action] = {
         required_binary="npm",
         runner=run_npm_audit_fix_force,
         needs_confirmation=True,
+    ),
+    "Limpiar repositorio (git)": Action(
+        label="Limpiar repositorio (git)",
+        required_binary="git",
+        runner=run_git_clean,
+        needs_confirmation=True,
+    ),
+    "Crear branch feature (git)": Action(
+        label="Crear branch feature (git)",
+        required_binary="git",
+        runner=run_git_create_feature_branch,
     ),
 }
