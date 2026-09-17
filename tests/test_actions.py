@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from textual.widgets import LoadingIndicator, Static
+from textual.widgets import ListView, LoadingIndicator, Static
 
 from auditor.actions import (
     ACTIONS_REGISTRY,
@@ -88,16 +88,22 @@ def test_actions_screen_omits_npm_audit_without_npm(tmp_path: Path) -> None:
 
 def test_actions_registry_keys_actions_by_required_binary() -> None:
     """Each action declares which binary it needs, for host filtering."""
-    assert "npm audit" in ACTIONS_REGISTRY
-    assert ACTIONS_REGISTRY["npm audit"].required_binary == "npm"
+    assert "Ver vulnerabilidades (npm audit)" in ACTIONS_REGISTRY
+    assert ACTIONS_REGISTRY["Ver vulnerabilidades (npm audit)"].required_binary == "npm"
 
 
 def test_registry_offers_both_fix_actions() -> None:
     """The registry includes the safe and forced npm audit fix actions."""
-    assert "npm audit fix" in ACTIONS_REGISTRY
-    assert "npm audit fix --force" in ACTIONS_REGISTRY
-    assert ACTIONS_REGISTRY["npm audit fix"].required_binary == "npm"
-    assert ACTIONS_REGISTRY["npm audit fix --force"].required_binary == "npm"
+    assert "Corregir vulnerabilidades (npm audit fix)" in ACTIONS_REGISTRY
+    assert "Forzar corrección (npm audit fix --force)" in ACTIONS_REGISTRY
+    assert (
+        (ACTIONS_REGISTRY["Corregir vulnerabilidades (npm audit fix)"]).required_binary
+        == "npm"
+    )
+    assert (
+        (ACTIONS_REGISTRY["Forzar corrección (npm audit fix --force)"]).required_binary
+        == "npm"
+    )
 
 
 def test_actions_screen_lists_fix_actions(tmp_path: Path) -> None:
@@ -110,8 +116,31 @@ def test_actions_screen_lists_fix_actions(tmp_path: Path) -> None:
             await pilot.press("s")
             await pilot.pause()
             labels = actions_labels(app)
-            assert any(label.strip() == "npm audit fix" for label in labels)
-            assert any("npm audit fix --force" in label for label in labels)
+            assert any(
+                "Corregir vulnerabilidades (npm audit fix)" in label for label in labels
+            )
+            assert any(
+                "Forzar corrección (npm audit fix --force)" in label for label in labels
+            )
+
+    asyncio.run(run())
+
+
+def test_git_actions_are_listed_before_npm_actions(tmp_path: Path) -> None:
+    """Git actions come first in the actions list, npm actions after."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            labels = actions_labels(app)
+            first_git = next(i for i, label in enumerate(labels) if "(git)" in label)
+            first_npm = next(i for i, label in enumerate(labels) if "npm" in label)
+            assert first_git < first_npm
+            # git actions are exactly the first two entries
+            assert all("(git)" in label for label in labels[:2])
 
     asyncio.run(run())
 
@@ -310,8 +339,7 @@ def test_running_npm_audit_fix_reports_applied_and_remaining(
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("down")  # highlight 'npm audit fix'
-            await pilot.press("enter")
+            await select_action(app, pilot, "Corregir vulnerabilidades")
             await pilot.pause()
             output = app.screen.query_one("#action-output", Static)
             text = str(output.render()).lower()
@@ -337,9 +365,7 @@ def test_forced_fix_requires_confirmation_before_running(
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("down")  # 'npm audit fix'
-            await pilot.press("down")  # 'npm audit fix --force'
-            await pilot.press("enter")
+            await select_action(app, pilot, "Forzar corrección")
             await pilot.pause()
             assert isinstance(app.screen, ConfirmScreen)
             # nothing ran yet
@@ -357,10 +383,7 @@ def test_confirming_runs_the_forced_fix(tmp_path: Path) -> None:
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("down")
-            await pilot.press("down")
-            await pilot.press("enter")  # ask confirmation
-            await pilot.pause()
+            await select_action(app, pilot, "Forzar corrección")
             await pilot.press("s")  # confirm
             await pilot.pause()
             text = actions_output(app).lower()
@@ -384,10 +407,7 @@ def test_cancelling_keeps_actions_screen_without_running(
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("down")
-            await pilot.press("down")
-            await pilot.press("enter")  # ask confirmation
-            await pilot.pause()
+            await select_action(app, pilot, "Forzar corrección")
             await pilot.press("escape")  # cancel
             await pilot.pause()
             assert isinstance(app.screen, RepoActions)
@@ -408,8 +428,7 @@ def test_safe_fix_still_runs_without_confirmation(tmp_path: Path) -> None:
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("down")  # 'npm audit fix' (safe)
-            await pilot.press("enter")
+            await select_action(app, pilot, "Corregir vulnerabilidades")
             await pilot.pause()
             assert isinstance(app.screen, RepoActions)
             output = app.screen.query_one("#action-output", Static)
@@ -426,6 +445,16 @@ def test_safe_fix_still_runs_without_confirmation(tmp_path: Path) -> None:
 def actions_labels(app: AuditorApp) -> list[str]:
     listing = app.screen.query_one("#actions-list")
     return [str(item.children[0].render()) for item in listing.children]
+
+
+async def select_action(app: AuditorApp, pilot, needle: str) -> None:
+    """Highlight the first action whose label contains needle, then enter."""
+    labels = actions_labels(app)
+    index = next(i for i, label in enumerate(labels) if needle in label)
+    listing = app.screen.query_one("#actions-list", ListView)
+    listing.index = index
+    await pilot.pause()
+    await pilot.press("enter")
 
 
 def test_spinner_is_hidden_when_the_actions_screen_opens(
@@ -483,7 +512,7 @@ def test_running_action_shows_spinner_and_finishes_with_report(
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("enter")  # run npm audit
+            await select_action(app, pilot, "Ver vulnerabilidades")
             await pilot.pause()
             # spinner visible while the command is still running
             spinner = app.screen.query_one("#action-spinner", LoadingIndicator)
@@ -511,7 +540,7 @@ def test_completion_notifies_the_user(tmp_path: Path) -> None:
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("enter")
+            await select_action(app, pilot, "Ver vulnerabilidades")
             await wait_for_idle(app)
 
     with (
@@ -546,7 +575,7 @@ def test_running_npm_audit_shows_vulnerability_report(tmp_path: Path) -> None:
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("enter")  # run the first (highlighted) action
+            await select_action(app, pilot, "Ver vulnerabilidades")
             await pilot.pause()
             report = app.screen.query_one("#action-output", Static)
             text = str(report.render()).lower()
@@ -647,10 +676,7 @@ def test_fix_report_shows_npm_error_instead_of_false_success(
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("down")
-            await pilot.press("down")
-            await pilot.press("enter")
-            await pilot.pause()
+            await select_action(app, pilot, "Forzar corrección")
             await pilot.press("s")  # confirm
             await wait_for_idle(app)
             text = actions_output(app)
@@ -675,10 +701,7 @@ def test_fix_report_shows_changes_even_when_counters_are_zero(
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("down")
-            await pilot.press("down")
-            await pilot.press("enter")
-            await pilot.pause()
+            await select_action(app, pilot, "Forzar corrección")
             await pilot.press("s")  # confirm
             await wait_for_idle(app)
             text = actions_output(app)
@@ -705,10 +728,7 @@ def test_fix_report_reads_reaudit_from_nested_audit_key(
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("s")
             await pilot.pause()
-            await pilot.press("down")
-            await pilot.press("down")
-            await pilot.press("enter")
-            await pilot.pause()
+            await select_action(app, pilot, "Forzar corrección")
             await pilot.press("s")  # confirm
             await wait_for_idle(app)
             text = actions_output(app).lower()

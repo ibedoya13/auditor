@@ -311,22 +311,7 @@ class ConfirmScreen(ModalScreen[bool]):
 
 
 ACTIONS_REGISTRY: dict[str, Action] = {
-    "npm audit": Action(
-        label="npm audit",
-        required_binary="npm",
-        runner=run_npm_audit,
-    ),
-    "npm audit fix": Action(
-        label="npm audit fix",
-        required_binary="npm",
-        runner=run_npm_audit_fix_safe,
-    ),
-    "npm audit fix --force": Action(
-        label="npm audit fix --force",
-        required_binary="npm",
-        runner=run_npm_audit_fix_force,
-        needs_confirmation=True,
-    ),
+    # Git actions first
     "Limpiar repositorio (git)": Action(
         label="Limpiar repositorio (git)",
         required_binary="git",
@@ -337,5 +322,22 @@ ACTIONS_REGISTRY: dict[str, Action] = {
         label="Crear branch feature (git)",
         required_binary="git",
         runner=run_git_create_feature_branch,
+    ),
+    # npm actions
+    "Ver vulnerabilidades (npm audit)": Action(
+        label="Ver vulnerabilidades (npm audit)",
+        required_binary="npm",
+        runner=run_npm_audit,
+    ),
+    "Corregir vulnerabilidades (npm audit fix)": Action(
+        label="Corregir vulnerabilidades (npm audit fix)",
+        required_binary="npm",
+        runner=run_npm_audit_fix_safe,
+    ),
+    "Forzar corrección (npm audit fix --force)": Action(
+        label="Forzar corrección (npm audit fix --force)",
+        required_binary="npm",
+        runner=run_npm_audit_fix_force,
+        needs_confirmation=True,
     ),
 }
