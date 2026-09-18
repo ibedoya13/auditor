@@ -282,12 +282,10 @@ class RepoActions(Screen[None]):
         yield Header()
         yield Static(str(self.repo_path), id="repo-path")
         yield ListView(id="actions-list")
-        yield LoadingIndicator(id="action-spinner")
         yield Static("", id="action-output", markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
-        self._spinner_display(False)
         listing = self.query_one("#actions-list", ListView)
         self._available: list[Action] = [
             action
@@ -325,9 +323,11 @@ class RepoActions(Screen[None]):
             self.run_action(self._pending_action)
 
     def run_action(self, action: Action) -> None:
-        """Run the action in a worker thread, with a spinner while it runs."""
+        """Run the action in a worker thread, with an overlay while it runs."""
         self._write_output("")
-        self._spinner_display(True)
+        self.app.push_screen(
+            LoadingOverlay(action), callback=self._on_loading_dismissed
+        )
         self.run_worker(
             self._run_action_worker(action),
             thread=True,
@@ -335,23 +335,33 @@ class RepoActions(Screen[None]):
             group="action-runner",
         )
 
+    def _on_loading_dismissed(self, result: object) -> None:
+        # the overlay is dismissed by the worker itself; nothing to do
+        pass
+
     async def _run_action_worker(self, action: Action) -> None:
         try:
             report = await asyncio.to_thread(action.runner, self.repo_path)
         except Exception as error:  # noqa: BLE001 - surfaced to the user
-            self.app.notify(
-                f"El comando falló: {error}", title="Error", severity="error"
+            self.app.call_from_thread(self._finish, "")
+            self.app.call_from_thread(
+                self.app.notify,
+                f"El comando falló: {error}",
+                title="Error",
+                severity="error",
             )
             return
-        self._write_output(report)
-        self._spinner_display(False)
-        self.app.notify(
+        self.app.call_from_thread(self._finish, report)
+        self.app.call_from_thread(
+            self.app.notify,
             f"'{action.label}' terminó correctamente.",
             title="Comando completado",
         )
 
-    def _spinner_display(self, visible: bool) -> None:
-        self.query_one("#action-spinner", LoadingIndicator).display = visible
+    def _finish(self, report: str) -> None:
+        """Dismiss the overlay and show the report (main thread only)."""
+        self.app.pop_screen()
+        self._write_output(report)
 
     def _write_output(self, text: str) -> None:
         self.query_one("#action-output", Static).update(text)
@@ -366,6 +376,37 @@ class ConfirmScreen(ModalScreen[bool]):
         ("escape", "cancel", "Cancelar"),
     ]
 
+    DEFAULT_CSS = """
+    ConfirmScreen {
+        align: center middle;
+    }
+    ConfirmScreen Grid {
+        grid-rows: auto auto auto;
+        width: 72;
+        height: auto;
+        border: round $accent;
+        padding: 1 2;
+        background: $surface;
+    }
+    ConfirmScreen #confirm-question {
+        width: 1fr;
+        content-align: center middle;
+        text-style: bold;
+        color: $text;
+    }
+    ConfirmScreen #confirm-warning {
+        width: 1fr;
+        content-align: center middle;
+        color: $text-muted;
+    }
+    ConfirmScreen #confirm-help {
+        width: 1fr;
+        content-align: center middle;
+        color: $accent;
+        text-style: bold;
+    }
+    """
+
     def __init__(self, action: Action) -> None:
         super().__init__()
         self.action = action
@@ -373,18 +414,66 @@ class ConfirmScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Grid():
             yield Static(
-                f"¿Ejecutar '{self.action.label}'?\n"
+                f"¿Ejecutar '{self.action.label}'?",
+                id="confirm-question",
+            )
+            yield Static(
                 "Esta acción puede introducir cambios importantes "
                 "(breaking changes) en el proyecto.",
-                id="confirm-message",
+                id="confirm-warning",
             )
-            yield Static("s: confirmar · n/esc: cancelar", id="confirm-help")
+            yield Static(
+                "[b]s[/b] confirmar   ·   [b]n[/b]/[b]esc[/b] cancelar",
+                id="confirm-help",
+            )
 
     def action_confirm(self) -> None:
         self.dismiss(True)
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+class LoadingOverlay(ModalScreen[None]):
+    """Compact modal with a spinner shown while an action is running.
+
+    Blocks any interaction with the screen below: a modal takes the
+    focus, so keys cannot reach the actions list until the action ends.
+    """
+
+    DEFAULT_CSS = """
+    LoadingOverlay {
+        align: center middle;
+        background: $background 60%;
+    }
+    LoadingOverlay Grid {
+        grid-rows: auto auto;
+        width: 60;
+        height: auto;
+        border: round $accent;
+        padding: 1 2;
+        background: $surface;
+    }
+    LoadingOverlay #loading-label {
+        width: 1fr;
+        content-align: center middle;
+        text-style: bold;
+        color: $text;
+    }
+    LoadingOverlay #loading-spinner {
+        width: 1fr;
+        content-align: center middle;
+    }
+    """
+
+    def __init__(self, action: Action) -> None:
+        super().__init__()
+        self.action = action
+
+    def compose(self) -> ComposeResult:
+        with Grid():
+            yield Static(f"Ejecutando '{self.action.label}'…", id="loading-label")
+            yield LoadingIndicator(id="loading-spinner")
 
 
 class OverridesScreen(ModalScreen[None]):

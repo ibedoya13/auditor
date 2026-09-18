@@ -1,12 +1,13 @@
 [project]
 name = "auditor"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.1.1"
+description = "TUI para automatizar la remediación de vulnerabilidades npm en repositorios Node.js"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "textual>=8.2.8",
 ]
+scripts = { auditor = "auditor.__main__:main" }
 
 [dependency-groups]
 dev = [

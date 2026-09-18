@@ -19,6 +19,16 @@ class DirectoryBrowser(Screen[Path]):
         ("q", "quit_app", "Salir"),
     ]
 
+    CSS = """
+    ListItem.-auditor-selected {
+        background: $accent;
+    }
+    ListItem.-auditor-selected > Label {
+        color: $text;
+        text-style: bold;
+    }
+    """
+
     def __init__(self, start_path: Path | None = None) -> None:
         super().__init__()
         self.path: Path = start_path or Path.home()
@@ -47,6 +57,16 @@ class DirectoryBrowser(Screen[Path]):
         listing.index = 0  # clear() resets the cursor; restore it to the top
         self.query_one("#current-path", Static).update(str(self.path))
         self.query_one("#status", Static).update("")
+        self._sync_selection_class(listing)
+
+    def _sync_selection_class(self, listing: ListView) -> None:
+        """Mirror the cursor position into a visible selection class."""
+        for index, item in enumerate(listing.children):
+            item.set_class(index == listing.index, "-auditor-selected")
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        """Keep the visible selection in sync when the cursor moves."""
+        self._sync_selection_class(event.list_view)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Move into the highlighted directory when an entry is selected."""

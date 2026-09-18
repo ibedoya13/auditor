@@ -41,6 +41,40 @@ def test_browser_lists_only_visible_directories(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_first_directory_is_highlighted_on_mount(tmp_path: Path) -> None:
+    """The first item of the listing shows the selection indicator on load."""
+    (tmp_path / "repo-a").mkdir()
+    (tmp_path / "repo-b").mkdir()
+    app = AuditorApp(start_path=tmp_path)
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            listing = app.screen.query_one("#directory-list", ListView)
+            first_item = listing.children[0]
+            assert first_item.has_class("-auditor-selected")
+
+    asyncio.run(run())
+
+
+def test_selection_indicator_follows_the_cursor(tmp_path: Path) -> None:
+    """Moving the cursor moves the highlight class to the new item."""
+    (tmp_path / "repo-a").mkdir()
+    (tmp_path / "repo-b").mkdir()
+    app = AuditorApp(start_path=tmp_path)
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            listing = app.screen.query_one("#directory-list", ListView)
+            listing.index = 1
+            await pilot.pause()
+            assert not listing.children[0].has_class("-auditor-selected")
+            assert listing.children[1].has_class("-auditor-selected")
+
+    asyncio.run(run())
+
+
 def test_enter_opens_highlighted_directory(tmp_path: Path) -> None:
     """Pressing enter moves into the highlighted directory."""
     (tmp_path / "repos").mkdir()

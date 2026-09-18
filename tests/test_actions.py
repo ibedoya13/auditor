@@ -14,6 +14,7 @@ from textual.widgets import Input, ListView, LoadingIndicator, Static
 from auditor.actions import (
     ACTIONS_REGISTRY,
     ConfirmScreen,
+    LoadingOverlay,
     OverridesScreen,
     RepoActions,
     apply_overrides,
@@ -464,10 +465,10 @@ async def select_action(app: AuditorApp, pilot, needle: str) -> None:
     await pilot.press("enter")
 
 
-def test_spinner_is_hidden_when_the_actions_screen_opens(
+def test_no_loading_overlay_when_the_actions_screen_opens(
     tmp_path: Path,
 ) -> None:
-    """No spinner until the user actually runs a command."""
+    """No loading overlay until the user actually runs a command."""
     repo = make_valid_repo(tmp_path)
     app = AuditorApp(start_path=repo)
 
@@ -475,8 +476,7 @@ def test_spinner_is_hidden_when_the_actions_screen_opens(
         async with app.run_test() as pilot:
             await pilot.press("s")
             await pilot.pause()
-            spinner = app.screen.query_one("#action-spinner", LoadingIndicator)
-            assert not spinner.display
+            assert isinstance(app.screen, RepoActions)
 
     asyncio.run(run())
 
@@ -503,6 +503,43 @@ def test_escape_from_actions_returns_to_directory_browser(
     asyncio.run(run())
 
 
+def test_running_action_locks_the_actions_list(tmp_path: Path) -> None:
+    """While an action runs, the list cannot be changed or re-triggered."""
+    repo = make_valid_repo(tmp_path)
+    app = AuditorApp(start_path=repo)
+    release = threading.Event()
+
+    def slow_npm_run(repo_path: str, args: list[str]) -> str:
+        release.wait(timeout=5)
+        return SAMPLE_AUDIT_OUTPUT
+
+    async def run() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("s")
+            await pilot.pause()
+            await select_action(app, pilot, "Ver vulnerabilidades")
+            await pilot.pause()
+            # a modal overlay is on top and takes the focus
+            assert len(app.screen_stack) > 2
+            assert isinstance(app.screen, LoadingOverlay)
+            assert app.focused is None or app.screen is app.focused.screen
+            # keys do not reach the list: index stays put
+            listing = app.screen_stack[-2].query_one("#actions-list", ListView)
+            before = listing.index
+            await pilot.press("down", "down", "enter")
+            await pilot.pause()
+            assert listing.index == before
+            assert len(app.screen_stack) > 2  # still locked
+            release.set()
+            await wait_for_idle(app)
+            # overlay dismissed, report written
+            assert isinstance(app.screen, RepoActions)
+            assert "qs" in actions_output(app).lower()
+
+    with patch("auditor.actions.npm_run", side_effect=slow_npm_run):
+        asyncio.run(run())
+
+
 def test_running_action_shows_spinner_and_finishes_with_report(
     tmp_path: Path,
 ) -> None:
@@ -521,13 +558,14 @@ def test_running_action_shows_spinner_and_finishes_with_report(
             await pilot.pause()
             await select_action(app, pilot, "Ver vulnerabilidades")
             await pilot.pause()
-            # spinner visible while the command is still running
-            spinner = app.screen.query_one("#action-spinner", LoadingIndicator)
+            # the loading overlay (with its spinner) covers the screen
+            assert isinstance(app.screen, LoadingOverlay)
+            spinner = app.screen.query_one("#loading-spinner", LoadingIndicator)
             assert spinner.display
             release.set()
             await wait_for_idle(app)
-            # spinner hidden and report written once the command finished
-            assert not spinner.display
+            # overlay gone and report written once the command finished
+            assert isinstance(app.screen, RepoActions)
             text = actions_output(app).lower()
             assert "qs" in text and "critical" in text
 
